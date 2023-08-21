@@ -51,9 +51,7 @@ import org.jetbrains.kotlin.gradle.plugin.sources.DefaultKotlinSourceSet
 import org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
-class WirePlugin @Inject internal constructor(
-  private val objects: ObjectFactory,
-) : Plugin<Project> {
+class WirePlugin : Plugin<Project> {
   private val android = AtomicBoolean(false)
   private val java = AtomicBoolean(false)
   private val kotlin = AtomicBoolean(false)
@@ -119,16 +117,19 @@ class WirePlugin @Inject internal constructor(
       group = GROUP
       description = "Aggregation task which runs every generation task for every given source"
 
-      doFirst {
-        val extension = project.extensions.getByType<WireExtension>()
-        check(extension.outputs.get().isNotEmpty()) {
-          "At least one target must be provided for project '${project.path}\n" +
+      doFirst { task ->
+        val projectPath = task.project.path
+        val extension = task.project.extensions.getByType<WireExtension>()
+
+        val hasOutputs = extension.outputs.map { it.isNotEmpty() }.orElse(false)
+        check(hasOutputs.get()) {
+          "At least one target must be provided for project '$projectPath\n" +
                   "See our documentation for details: https://square.github.io/wire/wire_compiler/#customizing-output"
         }
 
-        val hasKotlinOutput = extension.outputs.map { list -> list.any { it is KotlinOutput } }
+        val hasKotlinOutput = extension.outputs.map { list -> list.any { it is KotlinOutput } }.getOrElse(false)
         check(!hasKotlinOutput || kotlin.get()) {
-          "Wire Gradle plugin applied in " + "project '${project.path}' but no supported Kotlin plugin was found"
+          "Wire Gradle plugin applied in project '$projectPath' but no supported Kotlin plugin was found"
         }
       }
     }
@@ -223,8 +224,8 @@ class WirePlugin @Inject internal constructor(
         }
 
       // TODO: pair up generatedSourceDirectories with their targets so we can be precise.
-      source.javaSourceDirectorySet?.maybeAddSrcDirs(hasJavaOutput, generatedSourcesDirectories)
-      source.kotlinSourceDirectorySet?.maybeAddSrcDirs(hasKotlinOutput, generatedSourcesDirectories)
+//      source.javaSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasJavaOutput.get() })
+//      source.kotlinSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasKotlinOutput.get() })
 
       val taskName = "generate${source.name.capitalize()}Protos"
       val task = project.tasks.register(taskName, WireTask::class.java) { task: WireTask ->
@@ -236,8 +237,17 @@ class WirePlugin @Inject internal constructor(
           protoSourceInput.debug(task.logger)
           protoPathInput.debug(task.logger)
         }
-
-        task.outputDirectories.setFrom(generatedSourcesDirectories)
+        val outputDirectories: List<String> = buildList {
+          addAll(
+            targets.get()
+              // Emitted `.proto` files have a special treatment. Their root should be a resource, not
+              // a source. We exclude the `ProtoTarget` and we'll add its output to the resources
+              // below.
+              .filterNot { it is ProtoTarget }
+              .map(Target::outDirectory),
+          )
+        }
+        task.outputDirectories.setFrom(outputDirectories)
         task.projectDependencies.setFrom(projectDependenciesConfiguration)
         if (extension.protoLibrary) {
           task.protoLibraryOutput.set(File(project.libraryProtoOutputPath()))
@@ -303,13 +313,14 @@ class WirePlugin @Inject internal constructor(
     hasJavaOrKotlinOutput: Provider<Boolean>,
   ) {
     // Indicates when the plugin is applied inside the Wire repo to Wire's own modules.
-    val isInternalBuild = project.properties["com.squareup.wire.internal"] == "true"
+    val isInternalBuild = project.properties["com.squareup.wire.internal"].toString() == "true"
     val isMultiplatform = project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")
     val isJsOnly =
       if (isMultiplatform) false else project.plugins.hasPlugin("org.jetbrains.kotlin.js")
-    val runtimeDependency = wireRuntimeDependency(isInternalBuild)
-    val runtimeDependencyProviderIfRequired = hasJavaOrKotlinOutput.map { requires ->
-      if (requires) runtimeDependency else null
+    val runtimeDependencyProviderIfRequired = hasJavaOrKotlinOutput.map { required ->
+      // if null is returned, when `dependencies.addProvider()` is called, it will check for
+      // [Provider.isPresent] and ignore the dependency rather than fail.
+      wireRuntimeDependency(isInternalBuild).takeIf { required }
     }
 
     when {
@@ -336,22 +347,6 @@ class WirePlugin @Inject internal constructor(
         }
       }
     }
-  }
-
-  private fun WireSourceDirectorySet.maybeAddSrcDirs(hasOutput: Provider<Boolean>, files: FileCollection) {
-    srcDir(
-      project.provider {
-        val result = objects.fileCollection()
-
-        if (hasOutput.get()) {
-          result.from(
-            files.map { it.toRelativeString(project.projectDir) },
-          )
-        }
-
-        result
-      },
-    )
   }
 
   private fun wireRuntimeDependency(isInternalBuild: Boolean): Dependency {

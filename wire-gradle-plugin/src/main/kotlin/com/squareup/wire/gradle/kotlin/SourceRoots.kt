@@ -26,6 +26,7 @@ import com.squareup.wire.gradle.WireTask
 import org.gradle.api.DomainObjectSet
 import org.gradle.api.Project
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.FileCollection
 import org.gradle.api.file.SourceDirectorySet
 import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.SourceSetContainer
@@ -197,16 +198,10 @@ internal class WireSourceDirectorySet private constructor(
     }
   }
 
-  /** Adds the path to this set. */
-  fun srcDir(fileCollectionProvider: Provider<ConfigurableFileCollection>): WireSourceDirectorySet {
-    sourceDirectorySet?.srcDir(fileCollectionProvider)
-    androidSourceDirectorySet?.setSrcDirs(fileCollectionProvider.get().files)
-
-    return this
-  }
-
-  /** Adds the path to this set. */
-  fun srcDir(path: String): WireSourceDirectorySet {
+  /**
+   * Adds the [path] to this set. [path] is evaluated the same as [Project.file].
+   */
+  fun srcDir(path: Any): WireSourceDirectorySet {
     sourceDirectorySet?.srcDir(path)
     androidSourceDirectorySet?.srcDir(path)
 

@@ -53,17 +53,19 @@ if (project.rootProject.name == "wire") {
 }
 
 dependencies {
-  implementation(gradleKotlinDsl())
-
   implementation(projects.wireCompiler)
   implementation(projects.wireKotlinGenerator)
   implementation(libs.swiftpoet)
   implementation(libs.okio.fakefilesystem)
 
+  compileOnly(gradleKotlinDsl())
   compileOnly(gradleApi())
 
   implementation(libs.pluginz.kotlin)
   compileOnly(libs.pluginz.android)
+
+  testImplementation(gradleKotlinDsl())
+  testImplementation(gradleApi())
 
   testImplementation(libs.junit)
   testImplementation(libs.assertj)
@@ -76,15 +78,27 @@ val installProtoJars by tasks.creating(Copy::class) {
 }
 
 tasks.withType<Test>().configureEach {
-  jvmArgs("--add-opens", "java.base/java.util=ALL-UNNAMED")
+  // Required to test configuration cache in tests when using withDebug()
+  // https://github.com/gradle/gradle/issues/22765#issuecomment-1339427241
+  jvmArgs(
+    "--add-opens",
+    "java.base/java.util=ALL-UNNAMED",
+    "--add-opens",
+    "java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+    "--add-opens",
+    "java.base/java.lang.invoke=ALL-UNNAMED",
+    "--add-opens",
+    "java.base/java.net=ALL-UNNAMED",
+  )
+
   dependsOn(installProtoJars)
   dependsOn(":wire-runtime:installLocally")
 }
 
 val test by tasks.getting(Test::class) {
   // Fixtures run in a separate JVM, routing properties from the VM running the build into test VM.
-  systemProperty("kjs", System.getProperty("kjs"))
-  systemProperty("knative", System.getProperty("knative"))
+  systemProperty("kjs", providers.systemProperty("kjs"))
+  systemProperty("knative", providers.systemProperty("knative"))
 }
 
 if (project.rootProject.name == "wire") {
