@@ -21,6 +21,7 @@ import com.squareup.wire.VERSION
 import com.squareup.wire.gradle.internal.libraryProtoOutputPath
 import com.squareup.wire.gradle.internal.targetDefaultOutputPath
 import com.squareup.wire.gradle.kotlin.Source
+import com.squareup.wire.gradle.kotlin.WireSourceDirectorySet
 import com.squareup.wire.gradle.kotlin.sourceRoots
 import com.squareup.wire.schema.ProtoTarget
 import com.squareup.wire.schema.Target
@@ -31,6 +32,7 @@ import org.gradle.api.Task
 import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.artifacts.UnknownConfigurationException
+import org.gradle.api.file.FileCollection
 import org.gradle.api.internal.file.FileOrUriNotationConverter
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.Provider
@@ -200,8 +202,8 @@ class WirePlugin(
       project.tasks
         .withType(AbstractKotlinCompile::class.java)
         .matching {
-          it.name.equals("compileKotlin") || it.name == "compile${source.name.capitalize()}Kotlin"
-        }.configureEach {
+          it.name.equals("compileKotlin") || it.name == "compile${source.name.capitalize()}Kotlin"}
+        .configureEach {
           if (hasJavaOrKotlinOutput.get()) {
             // Note that [KotlinCompile.source] will process files but will ignore strings.
             SOURCE_FUNCTION.invoke(it, arrayOf(generatedSourcesDirectories))
@@ -222,18 +224,9 @@ class WirePlugin(
           protoSourceInput.debug(task.logger)
           protoPathInput.debug(task.logger)
         }
-        val outputDirectories: List<String> = buildList {
-          addAll(
-            targets.get()
-              // Emitted `.proto` files have a special treatment. Their root should be a resource, not
-              // a source. We exclude the `ProtoTarget` and we'll add its output to the resources
-              // below.
-              .filterNot { it is ProtoTarget }
-              .map(Target::outDirectory),
-          )
-        }
-        task.outputDirectories.setFrom(outputDirectories)
         task.projectDependencies.setFrom(projectDependenciesConfiguration)
+
+        task.outputDirectories.setFrom(generatedSourcesDirectories)
         if (extension.protoLibrary) {
           task.protoLibraryOutput.set(File(project.libraryProtoOutputPath()))
         }
@@ -298,7 +291,7 @@ class WirePlugin(
     hasJavaOrKotlinOutput: Provider<Boolean>,
   ) {
     // Indicates when the plugin is applied inside the Wire repo to Wire's own modules.
-    val isInternalBuild = project.properties["com.squareup.wire.internal"].toString() == "true"
+    val isInternalBuild = project.properties["com.squareup.wire.internal"] == "true"
     val isMultiplatform = project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")
     val isJsOnly =
       if (isMultiplatform) false else project.plugins.hasPlugin("org.jetbrains.kotlin.js")
@@ -339,6 +332,22 @@ class WirePlugin(
         }
       }
     }
+  }
+
+  private fun WireSourceDirectorySet.maybeAddSrcDirs(hasOutput: Provider<Boolean>, files: FileCollection) {
+    srcDir(
+      project.provider {
+        val result = objects.fileCollection()
+
+        if (hasOutput.get()) {
+          result.from(
+            files.map { it.toRelativeString(project.projectDir) },
+          )
+        }
+
+        result
+      },
+    )
   }
 
   private fun wireRuntimeDependency(isInternalBuild: Boolean): Dependency {

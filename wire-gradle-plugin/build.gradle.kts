@@ -53,6 +53,8 @@ if (project.rootProject.name == "wire") {
 }
 
 dependencies {
+  implementation(gradleKotlinDsl())
+
   implementation(projects.wireCompiler)
   implementation(projects.wireKotlinGenerator)
   implementation(libs.swiftpoet)
