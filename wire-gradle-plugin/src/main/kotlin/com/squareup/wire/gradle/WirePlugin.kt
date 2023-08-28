@@ -21,22 +21,16 @@ import com.squareup.wire.VERSION
 import com.squareup.wire.gradle.internal.libraryProtoOutputPath
 import com.squareup.wire.gradle.internal.targetDefaultOutputPath
 import com.squareup.wire.gradle.kotlin.Source
-import com.squareup.wire.gradle.kotlin.WireSourceDirectorySet
 import com.squareup.wire.gradle.kotlin.sourceRoots
 import com.squareup.wire.schema.ProtoTarget
 import com.squareup.wire.schema.Target
 import com.squareup.wire.schema.newEventListenerFactory
-import java.io.File
-import java.lang.reflect.Array as JavaArray
-import java.util.concurrent.atomic.AtomicBoolean
-import javax.inject.Inject
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.artifacts.UnknownConfigurationException
-import org.gradle.api.file.FileCollection
 import org.gradle.api.internal.file.FileOrUriNotationConverter
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.Provider
@@ -44,22 +38,27 @@ import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.kotlin.dsl.getByType
+import org.gradle.kotlin.dsl.property
 import org.gradle.kotlin.dsl.register
 import org.jetbrains.kotlin.gradle.dsl.KotlinJsProjectExtension
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.plugin.sources.DefaultKotlinSourceSet
 import org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.io.File
+import java.lang.reflect.Array as JavaArray
 
-class WirePlugin : Plugin<Project> {
-  private val android = AtomicBoolean(false)
-  private val java = AtomicBoolean(false)
-  private val kotlin = AtomicBoolean(false)
+class WirePlugin(
+  internal val objects: ObjectFactory,
+) : Plugin<Project> {
+  private val android = objects.property<Boolean>().value(false)
+  private val java = objects.property<Boolean>().value(false)
+  private val kotlin = objects.property<Boolean>().value(false)
 
   private lateinit var extension: WireExtension
   internal lateinit var project: Project
 
-  private val sources by lazy { this.sourceRoots(kotlin = kotlin.get(), java = java.get()) }
+  private val sources by lazy { this.sourceRoots(project, kotlin = kotlin, java = java) }
 
   override fun apply(project: Project) {
     this.extension = project.extensions.create("wire", WireExtension::class.java, project)
@@ -78,28 +77,15 @@ class WirePlugin : Plugin<Project> {
       it.isCanBeConsumed = false
     }
 
-    val androidPluginHandler = { _: Plugin<*> ->
+    project.withAndroidPlugin {
       android.set(true)
       project.afterEvaluate {
         project.setupWireTasks(afterAndroid = true)
       }
     }
-    project.plugins.withId("com.android.application", androidPluginHandler)
-    project.plugins.withId("com.android.library", androidPluginHandler)
-    project.plugins.withId("com.android.instantapp", androidPluginHandler)
-    project.plugins.withId("com.android.feature", androidPluginHandler)
-    project.plugins.withId("com.android.dynamic-feature", androidPluginHandler)
 
-    val kotlinPluginHandler = { _: Plugin<*> -> kotlin.set(true) }
-    project.plugins.withId("org.jetbrains.kotlin.multiplatform", kotlinPluginHandler)
-    project.plugins.withId("org.jetbrains.kotlin.android", kotlinPluginHandler)
-    project.plugins.withId("org.jetbrains.kotlin.jvm", kotlinPluginHandler)
-    project.plugins.withId("org.jetbrains.kotlin.js", kotlinPluginHandler)
-    project.plugins.withId("kotlin2js", kotlinPluginHandler)
-
-    val javaPluginHandler = { _: Plugin<*> -> java.set(true) }
-    project.plugins.withId("java", javaPluginHandler)
-    project.plugins.withId("java-library", javaPluginHandler)
+    project.withKotlinPlugin { kotlin.set(true) }
+    project.withJavaPlugin { java.set(true) }
 
     project.afterEvaluate {
       project.setupWireTasks(afterAndroid = false)
@@ -215,8 +201,7 @@ class WirePlugin : Plugin<Project> {
         .withType(AbstractKotlinCompile::class.java)
         .matching {
           it.name.equals("compileKotlin") || it.name == "compile${source.name.capitalize()}Kotlin"
-        }
-        .configureEach {
+        }.configureEach {
           if (hasJavaOrKotlinOutput.get()) {
             // Note that [KotlinCompile.source] will process files but will ignore strings.
             SOURCE_FUNCTION.invoke(it, arrayOf(generatedSourcesDirectories))
@@ -224,8 +209,8 @@ class WirePlugin : Plugin<Project> {
         }
 
       // TODO: pair up generatedSourceDirectories with their targets so we can be precise.
-//      source.javaSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasJavaOutput.get() })
-//      source.kotlinSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasKotlinOutput.get() })
+      source.javaSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasJavaOutput.get() })
+      source.kotlinSourceDirectorySet?.srcDir(generatedSourcesDirectories.filter { hasKotlinOutput.get() })
 
       val taskName = "generate${source.name.capitalize()}Protos"
       val task = project.tasks.register(taskName, WireTask::class.java) { task: WireTask ->
@@ -317,10 +302,17 @@ class WirePlugin : Plugin<Project> {
     val isMultiplatform = project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")
     val isJsOnly =
       if (isMultiplatform) false else project.plugins.hasPlugin("org.jetbrains.kotlin.js")
-    val runtimeDependencyProviderIfRequired = hasJavaOrKotlinOutput.map { required ->
+    val runtimeDependencyProviderIfRequired: Provider<Dependency> = hasJavaOrKotlinOutput.map { required ->
       // if null is returned, when `dependencies.addProvider()` is called, it will check for
       // [Provider.isPresent] and ignore the dependency rather than fail.
-      wireRuntimeDependency(isInternalBuild).takeIf { required }
+      if (required) {
+        wireRuntimeDependency(isInternalBuild)
+      } else {
+        // There's a Kotlin compiler failure here if we return a `null` as `Transformer` has the generic `OUT`
+        // as `Nullable` which isn't correctly assessed -- apparently. Even by specifying an anonymous object
+        // `Transformer<Dependency?, Boolean>` it still does not allow returning `Dependency?`
+        project.dependencies.create(files())
+      }
     }
 
     when {
